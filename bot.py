@@ -17,8 +17,8 @@ import random
 from datetime import datetime, timedelta
 import re
 import asyncpg
-from typing import Dict, List, Optional
 import asyncio
+import platform
 
 # تحميل متغيرات البيئة
 load_dotenv()
@@ -33,12 +33,13 @@ logger = logging.getLogger(__name__)
 # بيانات البوت من متغيرات البيئة
 TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL = f"@{os.getenv('CHANNEL_USERNAME')}"
-ADMINS = [int(id) for id in os.getenv('ADMIN_IDS').split(',')]
+ADMINS = [int(id) for id in os.getenv('ADMIN_IDS').split(',')] if os.getenv('ADMIN_IDS') else []
 DATABASE_URL = os.getenv('DATABASE_URL')
 
 # حالات المحادثة
 START, MAIN_MENU, CREATE_ROULETTE, ADD_CHANNEL, PAYMENT, WAITING_FOR_TEXT, WAITING_FOR_WINNERS = range(7)
 
+# ... (بقية الدوال تبقى كما هي بدون تغيير)
 # أسعار الخدمات
 PRICES = {
     'premium_month': 100,  # 100 نجمة للاشتراك الشهري
@@ -104,8 +105,9 @@ async def init_db():
         """)
     return pool
 
+# ... (بقية الدوال تبقى كما هي بدون تغيير)
 # التحقق من حالة المستخدم المدفوعة
-async def check_user_payment_status(user_id: int, pool) -> Dict:
+async def check_user_payment_status(user_id: int, pool) -> dict:
     async with pool.acquire() as conn:
         user = await conn.fetchrow("""
             SELECT is_premium, premium_expiry, stars 
@@ -196,6 +198,7 @@ async def show_channel_subscription(update: Update, context: ContextTypes.DEFAUL
 
 async def subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
     
     try:
@@ -208,7 +211,6 @@ async def subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.answer("حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
         return START
     
-    await query.answer()
     await show_main_menu(update, context)
     return MAIN_MENU
 
@@ -693,11 +695,17 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     elif update.message:
         await update.message.reply_text("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى!")
 
+
 async def main() -> None:
+    # حل مشكلة event loop في Windows
+    if platform.system() == 'Windows':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     pool = await init_db()
     application = Application.builder().token(TOKEN).build()
     application.bot_data['pool'] = pool
     
+    # تكوين ConversationHandler مع تحديد per_message=True
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -725,7 +733,8 @@ async def main() -> None:
                 CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
             ]
         },
-        fallbacks=[CommandHandler('start', start)]
+        fallbacks=[CommandHandler('start', start)],
+        per_message=True  # إضافة هذا الخيار
     )
     
     application.add_handler(conv_handler)
@@ -738,7 +747,26 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     application.add_error_handler(error_handler)
     
-    await application.run_polling()
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # البقاء في حلقة التشغيل حتى يتم إيقاف البوت
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Stopping bot...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        await pool.close()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
