@@ -4,14 +4,14 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    ContextTypes,
+    Filters,
+    CallbackContext,
     PreCheckoutQueryHandler,
-    ConversationHandler,
-    filters
+    ConversationHandler
 )
 import random
 from datetime import datetime, timedelta
@@ -162,7 +162,7 @@ async def process_payment(user_id: int, payment_type: str, pool) -> bool:
 
 # ======== الوظائف الأساسية للبوت ========
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def start(update: Update, context: CallbackContext) -> int:
     user = update.effective_user
     user_id = user.id
     
@@ -179,7 +179,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await show_main_menu(update, context)
     return MAIN_MENU
 
-async def show_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_channel_subscription(update: Update, context: CallbackContext):
     keyboard = [
         [InlineKeyboardButton("قناتنا", url=f"https://t.me/{CHANNEL[1:]}")],
         [InlineKeyboardButton("لقد اشتركت في القناة", callback_data='subscribed')]
@@ -193,7 +193,7 @@ async def show_channel_subscription(update: Update, context: ContextTypes.DEFAUL
         reply_markup=reply_markup
     )
 
-async def subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def subscribed(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -211,7 +211,7 @@ async def subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await show_main_menu(update, context)
     return MAIN_MENU
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_main_menu(update: Update, context: CallbackContext):
     keyboard = [
         [InlineKeyboardButton("إنشاء روليت", callback_data='create_roulette')],
         [InlineKeyboardButton("ربط القناة", callback_data='link_channel')],
@@ -233,7 +233,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
 
-async def create_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def create_roulette(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     
@@ -257,7 +257,7 @@ async def create_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     return WAITING_FOR_TEXT
 
-async def handle_roulette_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_roulette_text(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     roulette_text = update.message.text
     
@@ -278,7 +278,7 @@ async def handle_roulette_text(update: Update, context: ContextTypes.DEFAULT_TYP
     
     return ADD_CHANNEL
 
-async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def add_channel(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     user_id = query.from_user.id
     pool = context.bot_data.get('pool')
@@ -319,7 +319,7 @@ async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         
         return WAITING_FOR_WINNERS
 
-async def skip_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def skip_channel(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     
@@ -335,7 +335,7 @@ async def skip_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     return WAITING_FOR_WINNERS
 
-async def set_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def set_winners(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     user_id = query.from_user.id
     winners_count = int(query.data.split('_')[1])
@@ -402,7 +402,7 @@ async def set_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     return MAIN_MENU
 
-async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def join_roulette(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     user = query.from_user
     roulette_id = int(query.data.split('_')[1])
@@ -473,7 +473,7 @@ async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     await query.answer("تم انضمامك إلى السحب بنجاح!")
 
-async def draw_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def draw_roulette(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     user = query.from_user
     roulette_id = int(query.data.split('_')[1])
@@ -538,7 +538,7 @@ async def draw_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             WHERE id = $1
         """, roulette_id)
 
-async def stop_participation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def stop_participation(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     user = query.from_user
     roulette_id = int(query.data.split('_')[1])
@@ -556,13 +556,13 @@ async def stop_participation(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await query.answer("تم إيقاف المشاركة في السحب!")
 
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def back_to_main(update: Update, context: CallbackContext) -> int:
     await show_main_menu(update, context)
     return MAIN_MENU
 
 # ======== نظام الدفع والنجوم ========
 
-async def show_donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def show_donate_menu(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     user_id = query.from_user.id
     pool = context.bot_data.get('pool')
@@ -587,7 +587,7 @@ async def show_donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reply_markup=reply_markup
     )
 
-async def handle_donate_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_donate_selection(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     amount = PRICES['donate']
     
@@ -607,14 +607,14 @@ async def handle_donate_selection(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Error sending invoice: {e}")
         await query.answer("حدث خطأ أثناء إعداد عملية الدفع. يرجى المحاولة لاحقًا.", show_alert=True)
 
-async def handle_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_pre_checkout(update: Update, context: CallbackContext) -> None:
     query = update.pre_checkout_query
     try:
         await context.bot.answer_pre_checkout_query(query.id, ok=True)
     except Exception as e:
         logger.error(f"Error in pre-checkout: {e}")
 
-async def handle_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_successful_payment(update: Update, context: CallbackContext) -> None:
     payment = update.message.successful_payment
     user = update.message.from_user
     amount = payment.total_amount
@@ -660,7 +660,7 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         "سيتم استخدام هذه الأموال لتحسين البوت وتقديم المزيد من الميزات."
     )
 
-async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_payment(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     user_id = query.from_user.id
     payment_type = query.data
@@ -684,7 +684,7 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("رصيدك من النجوم غير كافي!", show_alert=True)
         return PAYMENT
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def error_handler(update: Update, context: CallbackContext) -> None:
     logger.error(msg="حدث خطأ في البوت:", exc_info=context.error)
     
     if update.callback_query:
@@ -694,8 +694,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def main() -> None:
     pool = await init_db()
-    application = Application.builder().token(TOKEN).build()
-    application.bot_data['pool'] = pool
+    updater = Updater(TOKEN)
+    updater.dispatcher.bot_data['pool'] = pool
+    dispatcher = updater.dispatcher
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -707,7 +708,7 @@ async def main() -> None:
                 CallbackQueryHandler(show_donate_menu, pattern='^donate_menu$')
             ],
             WAITING_FOR_TEXT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_roulette_text),
+                MessageHandler(Filters.text & ~Filters.command, handle_roulette_text),
                 CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
             ],
             ADD_CHANNEL: [
@@ -727,17 +728,18 @@ async def main() -> None:
         fallbacks=[CommandHandler('start', start)]
     )
     
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(join_roulette, pattern='^join_'))
-    application.add_handler(CallbackQueryHandler(draw_roulette, pattern='^draw_'))
-    application.add_handler(CallbackQueryHandler(stop_participation, pattern='^stop_'))
-    application.add_handler(CallbackQueryHandler(back_to_main, pattern='^back_to_main$'))
-    application.add_handler(CallbackQueryHandler(handle_donate_selection, pattern='^donate$'))
-    application.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
-    application.add_error_handler(error_handler)
+    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(CallbackQueryHandler(join_roulette, pattern='^join_'))
+    dispatcher.add_handler(CallbackQueryHandler(draw_roulette, pattern='^draw_'))
+    dispatcher.add_handler(CallbackQueryHandler(stop_participation, pattern='^stop_'))
+    dispatcher.add_handler(CallbackQueryHandler(back_to_main, pattern='^back_to_main$'))
+    dispatcher.add_handler(CallbackQueryHandler(handle_donate_selection, pattern='^donate$'))
+    dispatcher.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
+    dispatcher.add_handler(MessageHandler(Filters.successful_payment, handle_successful_payment))
+    dispatcher.add_error_handler(error_handler)
     
-    await application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     asyncio.run(main())
