@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.constants import ParseMode
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -720,7 +721,7 @@ async def main() -> None:
                 CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
             ],
             WAITING_FOR_WINNERS: [
-                CallbackQueryHandler(set_winners, pattern='^winners_\d+$'),
+                CallbackQueryHandler(set_winners, pattern=r'^winners_\d+$'),
                 CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
             ]
         },
