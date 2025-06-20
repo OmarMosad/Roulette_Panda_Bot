@@ -50,6 +50,25 @@ PRICES = {
 
 STARS_CURRENCY = "XTR"
 
+async def safe_answer_query(query, text=None, show_alert=False):
+    """دالة مساعدة للرد الآمن على الاستعلامات مع معالجة الأخطاء"""
+    try:
+        if text:
+            await query.answer(text, show_alert=show_alert)
+            logger.info(f"تم إرسال التنبيه: {text}")
+        else:
+            await query.answer()
+        return True
+    except Exception as e:
+        logger.error(f"فشل إرسال التنبيه: {e}")
+        try:
+            if text:
+                await query.message.reply_text(text)
+            return False
+        except Exception as e2:
+            logger.error(f"فشل إرسال الرسالة البديلة: {e2}")
+            return False
+
 async def init_db():
     pool = await asyncpg.create_pool(DATABASE_URL)
     async with pool.acquire() as conn:
@@ -132,16 +151,11 @@ async def check_user_payment_status(user_id: int, pool) -> dict:
                 'linked_channel': None
             }
         
-        # نحولها لقاموس علشان نقدر نعدل عليها
         user_dict = dict(user)
 
-        # التحقق من انتهاء الاشتراك
-        if (
-            user_dict['is_premium'] and 
+        if (user_dict['is_premium'] and 
             user_dict['premium_expiry'] and 
-            user_dict['premium_expiry'] < datetime.now()
-        ):
-            # نحدث القاعدة ونعدل القيم في القاموس
+            user_dict['premium_expiry'] < datetime.now()):
             await conn.execute("""
                 UPDATE users 
                 SET is_premium = FALSE, premium_expiry = NULL 
@@ -151,21 +165,6 @@ async def check_user_payment_status(user_id: int, pool) -> dict:
             user_dict['premium_expiry'] = None
 
         return user_dict
-
-
-        # تحقق من انتهاء البريميوم
-        if user_dict['is_premium'] and user_dict['premium_expiry'] and user_dict['premium_expiry'] < datetime.now():
-            # الاشتراك خلص، نحدث البيانات
-            await conn.execute("""
-                UPDATE users 
-                SET is_premium = FALSE, premium_expiry = NULL 
-                WHERE telegram_id = $1
-            """, user_id)
-            user_dict['is_premium'] = False
-            user_dict['premium_expiry'] = None
-
-        return user_dict
-
 
 async def process_payment(user_id: int, payment_type: str, pool, use_points: bool = False) -> bool:
     async with pool.acquire() as conn:
@@ -241,10 +240,10 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             if "Message is not modified" in str(e):
-                await update.callback_query.answer()
+                await safe_answer_query(update.callback_query)
             else:
                 logger.error(f"Error in show_admin_menu: {e}")
-                await update.callback_query.answer("حدث خطأ أثناء التحميل", show_alert=True)
+                await safe_answer_query(update.callback_query, "حدث خطأ أثناء التحميل", show_alert=True)
     else:
         await update.message.reply_text(
             text=text,
@@ -253,7 +252,7 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     await query.edit_message_text(
         text="أرسل معرف المستخدم وعدد النقاط التي تريد إضافتها بالصيغة التالية:\n\n"
              "user_id:points\n\n"
@@ -310,25 +309,30 @@ async def show_channel_subscription(update: Update, context: ContextTypes.DEFAUL
 
 async def subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     user_id = query.from_user.id
     
     try:
         member = await context.bot.get_chat_member(CHANNEL, user_id)
         if member.status not in ['member', 'administrator', 'creator']:
-            await query.answer("لم يتم العثور على اشتراكك. يرجى الاشتراك أولاً!", show_alert=True)
+            # رد وحيد لو مش مشترك
+            await safe_answer_query(query, "لم يتم العثور على اشتراكك. يرجى الاشتراك أولاً!", show_alert=True)
             return START
     except Exception as e:
         logger.error(f"Error rechecking channel membership: {e}")
-        await query.answer("حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
+        await safe_answer_query(query, "حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
         return START
     
-    if user_id in ADMINS:
-        await show_admin_menu(update, context)
-        return ADMIN_MENU
-    else:
+    # لو مش أدمن
+    if user_id not in ADMINS:
+        await safe_answer_query(query, "تم التأكد من اشتراكك بنجاح!", show_alert=True)
         await show_main_menu(update, context)
         return MAIN_MENU
+    
+    # لو أدمن
+    await safe_answer_query(query, "تم التأكد من اشتراكك كمسؤول!", show_alert=True)
+    await show_admin_menu(update, context)
+    return ADMIN_MENU
+
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -360,10 +364,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             if "Message is not modified" in str(e):
-                await update.callback_query.answer()
+                await safe_answer_query(update.callback_query)
             else:
                 logger.error(f"Error in show_main_menu: {e}")
-                await update.callback_query.answer("حدث خطأ أثناء التحميل", show_alert=True)
+                await safe_answer_query(update.callback_query, "حدث خطأ أثناء التحميل", show_alert=True)
     else:
         await update.message.reply_text(
             text=text,
@@ -372,11 +376,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def create_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     user_id = query.from_user.id
     pool = context.bot_data.get('pool')
     
-    # التحقق من وجود قناة مربوطة
     user_status = await check_user_payment_status(user_id, pool)
     if not user_status['linked_channel']:
         await query.edit_message_text(
@@ -427,10 +430,6 @@ async def handle_roulette_text(update: Update, context: ContextTypes.DEFAULT_TYP
     
     return ADD_CHANNEL
 
-# ... (بقية الاستيرادات والمتغيرات كما هي)
-
-# تعديل دالة handle_payment
-# هذا هو الشكل الصحيح الذي يجب أن يبقى
 async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = query.from_user.id
@@ -438,7 +437,7 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     pool = context.bot_data.get('pool')
     
     if not pool:
-        await query.answer("حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
+        await safe_answer_query(query, "حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
         return MAIN_MENU
 
     payment_map = {
@@ -452,19 +451,15 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     payment_key = payment_map.get(payment_type)
 
     if not payment_key:
-        await query.answer("نوع الدفع غير صحيح!", show_alert=True)
+        await safe_answer_query(query, "نوع الدفع غير صحيح!", show_alert=True)
         return PAYMENT
 
     amount = PRICES.get(payment_key, 0)
-
-    # الباقي كما هو...
-
     
     if use_points:
-        # الدفع بالنقاط
         payment_success = await process_payment(user_id, payment_key, pool, use_points=True)
         if payment_success:
-            await query.answer(f"تم الدفع بنجاح باستخدام {amount} نقطة!", show_alert=True)
+            await safe_answer_query(query, f"تم الدفع بنجاح باستخدام {amount} نقطة!", show_alert=True)
             await query.edit_message_text(
                 text="❗️الخطوة التالية: أرسل يوزر القناة (مثال: @ChannelName) أو حول رسالة من القناة\n\n"
                      "⚠️ يجب أن يكون البوت أدمن في القناة",
@@ -472,12 +467,10 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return WAITING_FOR_WINNERS
         else:
-            await query.answer("رصيد النقاط غير كافي!", show_alert=True)
+            await safe_answer_query(query, "رصيد النقاط غير كافي!", show_alert=True)
             return PAYMENT
     else:
-        # إرسال فاتورة الدفع للنجوم
         description = "اشتراك شهري" if payment_key == 'premium_month' else "دفع لمرة واحدة"
-        
         prices = [LabeledPrice(label=description, amount=amount)]
         
         try:
@@ -486,63 +479,52 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 title=description,
                 description=f"{description} مقابل {amount} نجوم تليجرام",
                 payload=f"{payment_key}_{user_id}_{amount}",
-                provider_token="",  # يترك فارغًا
+                provider_token="",
                 currency=STARS_CURRENCY,
                 prices=prices
             )
             return PAYMENT
         except Exception as e:
             logger.error(f"Error sending invoice: {e}")
-            await query.answer("حدث خطأ أثناء إعداد عملية الدفع. يرجى المحاولة لاحقًا.", show_alert=True)
+            await safe_answer_query(query, "حدث خطأ أثناء إعداد عملية الدفع. يرجى المحاولة لاحقًا.", show_alert=True)
             return PAYMENT
 
-# تعديل دالة handle_link_channel
 async def handle_link_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ربط القناة الرئيسيّة أو حفظ قناة الشرط (بدون ربط فعلى)."""
-    user_id   = update.message.from_user.id
-    pool      = context.bot_data.get('pool')
-    purpose   = context.user_data.get('link_channel_purpose')      # 'main_channel' أو 'condition_channel'
-
+    user_id = update.message.from_user.id
+    current_state = context.user_data.get('link_channel_purpose')
+    
     try:
-        # الحصول على كائن القناة سواء كانت رسالة محوَّلة أو يوزر مكتوب
         if update.message.forward_from_chat:
             chat = update.message.forward_from_chat
         else:
-            txt  = update.message.text.strip().replace('https://t.me/', '').lstrip('@')
-            chat = await context.bot.get_chat(f"@{txt}")
+            text = update.message.text.strip()
+            text = text.replace('https://t.me/', '').replace('@', '')
+            chat = await context.bot.get_chat(f"@{text}" if not text.startswith('@') else text)
+        
+        admins = await chat.get_administrators()
+        bot_id = context.bot.id
+        if not any(admin.user.id == bot_id for admin in admins):
+            await update.message.reply_text("❌ البوت ليس مشرفًا! يرجى ترقيته أولاً.")
+            return LINK_CHANNEL if current_state == 'main_channel' else WAITING_FOR_WINNERS
 
-        # -----------------------------------------------------------
-        # 1)  ربط القناة الرئيسيّة  ➜  يشترط أن يكون البوت مشرفًا
-        # -----------------------------------------------------------
-        if purpose == 'main_channel':
-            admins = await chat.get_administrators()
-            if not any(ad.user.id == context.bot.id for ad in admins):
-                await update.message.reply_text("❌ البوت ليس مشرفًا فى هذه القناة!")
-                return LINK_CHANNEL
-
+        if current_state == 'main_channel':
             channel_info = f"{chat.id}|{chat.username}" if chat.username else str(chat.id)
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE users SET linked_channel = $1 WHERE telegram_id = $2",
-                    channel_info, user_id
-                )
-
+            
+            async with context.bot_data['pool'].acquire() as conn:
+                await conn.execute("UPDATE users SET linked_channel = $1 WHERE telegram_id = $2", channel_info, user_id)
+            
             await update.message.reply_text(
-                f"✅ تم ربط القناة بنجاح!\n\nاسم القناة: {chat.title}\n"
-                f"{'@'+chat.username if chat.username else 'ID: '+str(chat.id)}"
+                f"✅ تم ربط القناة الرئيسية بنجاح!\n\n"
+                f"اسم القناة: {chat.title}\n"
+                f"{'@' + chat.username if chat.username else 'ID: ' + str(chat.id)}"
             )
             await show_main_menu(update, context)
             return MAIN_MENU
-
-        # -----------------------------------------------------------
-        # 2)  قناة الشرط  ➜  حفظ مؤقّت فقط (لا حاجة أن يكون البوت مشرفًا)
-        # -----------------------------------------------------------
-        else:  # purpose == 'condition_channel'
-            condition = f"@{chat.username}" if chat.username else str(chat.id)
-            context.user_data['required_channel'] = condition     # يُستخدم لاحقًا فى السحب
-
+        else:
+            context.user_data['required_channel'] = f"@{chat.username}" if chat.username else str(chat.id)
+            
             await update.message.reply_text(
-                "✅ تم حفظ قناة الشرط!\n\nاختر الآن عدد الفائزين:",
+                "الآن اختر عدد الفائزين:",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(str(i), callback_data=f'winners_{i}') for i in [1, 2, 3]],
                     [InlineKeyboardButton(str(i), callback_data=f'winners_{i}') for i in [4, 5, 6]],
@@ -552,29 +534,20 @@ async def handle_link_channel(update: Update, context: ContextTypes.DEFAULT_TYPE
                 ])
             )
             return WAITING_FOR_WINNERS
-
-    except Exception as e:
-        logger.error(f"Error in handle_link_channel: {e}")
-        await update.message.reply_text(
-            "❌ تعذّر التعرف على القناة. تأكَّد أن القناة عامة وأن المعرّف صحيح."
-        )
-        return LINK_CHANNEL
-
         
     except Exception as e:
         logger.error(f"Error linking channel: {e}")
         await update.message.reply_text("""
-❌ حدث خطأ أثناء ربط القناة. تأكد من:
-1. القناة عامة (ليست خاصة)
-2. البوت مضاف كمسؤول بكل الصلاحيات
-3. اليوزر صحيح (مثل @ChannelName أو https://t.me/ChannelName)
+❌ حدث خطأ! تأكد من:
+1. القناة عامة
+2. البوت مشرف
+3. اليوزر صحيح (مثل @ChannelName)
 """)
-        return LINK_CHANNEL
+        return LINK_CHANNEL if current_state == 'main_channel' else WAITING_FOR_WINNERS
 
-# تعديل دالة link_channel
 async def link_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     context.user_data['link_channel_purpose'] = 'main_channel'
     
     await query.edit_message_text(
@@ -585,20 +558,19 @@ async def link_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return LINK_CHANNEL
 
-# تعديل دالة add_channel
 async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = query.from_user.id
     pool = context.bot_data.get('pool')
     
     if not pool:
-        await query.answer("حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
+        await safe_answer_query(query, "حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
         return MAIN_MENU
     
     user_status = await check_user_payment_status(user_id, pool)
     
     if not user_status['is_premium'] and user_id not in ADMINS:
-        await query.answer()
+        await safe_answer_query(query)
         context.user_data['link_channel_purpose'] = 'condition_channel'
         
         keyboard = [
@@ -620,7 +592,7 @@ async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         
         return PAYMENT
     else:
-        await query.answer()
+        await safe_answer_query(query)
         context.user_data['link_channel_purpose'] = 'condition_channel'
         
         await query.edit_message_text(
@@ -631,11 +603,9 @@ async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         
         return WAITING_FOR_WINNERS
 
-# ... (بقية الدوال تبقى كما هي)
-
 async def skip_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     context.user_data['required_channel'] = None
     await query.edit_message_text(
         text="الآن اختر عدد الفائزين:",
@@ -681,16 +651,15 @@ async def set_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                     InlineKeyboardButton("ابدأ السحب", callback_data=f'draw_{roulette_id}'),
                     InlineKeyboardButton("أوقف المشاركة", callback_data=f'stop_{roulette_id}')
                 ],
-                [InlineKeyboardButton("🔔 ذكرني إذا فزت 💌", callback_data='remind_me')]
+                [InlineKeyboardButton("🔔 ذكرني إذا فزت 💌", url="https://t.me/Roulette_Panda_Bot")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # نحاول النشر في القناة فقط، وإن فشل نوقف العملية
             user_status = await check_user_payment_status(user_id, pool)
             channel_info = user_status.get('linked_channel')
 
             if not channel_info:
-                await query.answer("❌ لا توجد قناة مربوطة!", show_alert=True)
+                await safe_answer_query(query, "❌ لا توجد قناة مربوطة!", show_alert=True)
                 return MAIN_MENU
 
             channel_id = channel_info.split('|')[0]
@@ -703,17 +672,15 @@ async def set_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                 )
             except Exception as e:
                 logger.error(f"❌ فشل النشر في القناة: {e}")
-                await query.answer("❌ فشل في نشر السحب بالقناة. تأكد أن البوت مشرف في القناة.", show_alert=True)
+                await safe_answer_query(query, "❌ فشل في نشر السحب بالقناة. تأكد أن البوت مشرف في القناة.", show_alert=True)
                 return MAIN_MENU
 
-            # تحديث بيانات السحب
             await conn.execute("""
                 UPDATE roulettes 
                 SET message_id = $1, chat_id = $2, channel_id = $3
                 WHERE id = $4
             """, message.message_id, message.chat.id, channel_info, roulette_id)
 
-            # إرسال لوحة التحكم الخاصة بصاحب السحب
             manage_keyboard = [
                 [InlineKeyboardButton("🎲 ابدأ السحب", callback_data=f'draw_{roulette_id}')],
                 [InlineKeyboardButton("⛔ أوقف المشاركة", callback_data=f'stop_{roulette_id}')],
@@ -730,9 +697,8 @@ async def set_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     except Exception as e:
         logger.error(f"Error in set_winners: {e}")
-        await query.answer("❌ حدث خطأ غير متوقع. حاول لاحقًا!", show_alert=True)
+        await safe_answer_query(query, "❌ حدث خطأ غير متوقع. حاول لاحقًا!", show_alert=True)
         return MAIN_MENU
-
 
 async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -747,53 +713,30 @@ async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         """, roulette_id)
         
         if not roulette:
-            await query.answer("هذا السحب لم يعد متاحًا!", show_alert=True)
+            await safe_answer_query(query, "هذا السحب لم يعد متاحًا!", show_alert=True)
             return
         
-        # التحقق من الاشتراك في القناة المربوطة (التي ربطها منشئ السحب)
+        # التحقق من الاشتراك في القناة المربوطة
         try:
-            # الحصول على معلومات القناة المربوطة
             creator_info = await conn.fetchrow("""
                 SELECT linked_channel FROM users WHERE telegram_id = $1
             """, roulette['creator_id'])
             
             if creator_info and creator_info['linked_channel']:
-                # استخراج معرف القناة من البيانات المخزنة (الصيغة: "channel_id|channel_username" أو "channel_id")
                 channel_parts = creator_info['linked_channel'].split('|')
                 channel_id = channel_parts[0]
                 channel_username = channel_parts[1] if len(channel_parts) > 1 else None
                 
-                # التحقق من الاشتراك في القناة
-                try:
-                    member = await context.bot.get_chat_member(chat_id=int(channel_id), user_id=user.id)
-                    if member.status not in ['member', 'administrator', 'creator']:
-                        channel_ref = f"@{channel_username}" if channel_username else f"القناة (ID: {channel_id})"
-                        await query.answer(f"يجب الاشتراك في {channel_ref} أولاً!", show_alert=True)
-                        
-                        # إرسال رسالة مع زر للاشتراك إذا كان هناك يوزر للقناة
-                        if channel_username:
-                            keyboard = [
-                                [InlineKeyboardButton("اشترك في القناة", url=f"https://t.me/{channel_username}")],
-                                [InlineKeyboardButton("لقد اشتركت ✅", callback_data=f'join_{roulette_id}')]
-                            ]
-                            reply_markup = InlineKeyboardMarkup(keyboard)
-                            
-                            await context.bot.send_message(
-                                chat_id=user.id,
-                                text=f"⚠️ يجب الاشتراك في القناة @{channel_username} أولاً للمشاركة في السحب",
-                                reply_markup=reply_markup
-                            )
-                        return
-                except Exception as e:
-                    logger.error(f"Error checking linked channel membership: {e}")
-                    await query.answer("حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
+                member = await context.bot.get_chat_member(chat_id=int(channel_id), user_id=user.id)
+                if member.status not in ['member', 'administrator', 'creator']:
+                    await safe_answer_query(query, f"يجب الاشتراك في القناة أولاً!", show_alert=True)
                     return
         except Exception as e:
-            logger.error(f"Error getting creator's linked channel: {e}")
-            await query.answer("حدث خطأ في النظام. يرجى المحاولة لاحقًا!", show_alert=True)
+            logger.error(f"Error checking linked channel membership: {e}")
+            await safe_answer_query(query, "حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
             return
         
-        # التحقق من الاشتراك في قناة الشرط إذا وجدت
+        # التحقق من الاشتراك في قناة الشرط
         if roulette['condition_channel_id']:
             try:
                 condition_channel = roulette['condition_channel_id']
@@ -802,23 +745,24 @@ async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 
                 member = await context.bot.get_chat_member(condition_channel, user.id)
                 if member.status not in ['member', 'administrator', 'creator']:
-                    await query.answer(f"يجب الاشتراك في {condition_channel} أولاً!", show_alert=True)
+                    await safe_answer_query(query, f"يجب الاشتراك في القناة الشرط أولاً!", show_alert=True)
                     return
             except Exception as e:
                 logger.error(f"Error checking condition channel membership: {e}")
-                await query.answer("حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
+                await safe_answer_query(query, "حدث خطأ أثناء التحقق من اشتراكك. حاول مرة أخرى!", show_alert=True)
                 return
         
-        # باقي الكود كما هو...
+        # التحقق من المشاركة المسبقة
         existing = await conn.fetchrow("""
             SELECT 1 FROM participants 
             WHERE roulette_id = $1 AND user_id = $2
         """, roulette_id, user.id)
         
         if existing:
-            await query.answer("لقد شاركت بالفعل في هذا السحب!", show_alert=True)
+            await safe_answer_query(query, "لقد شاركت بالفعل في هذا السحب!", show_alert=True)
             return
         
+        # تسجيل المشاركة
         await conn.execute("""
             INSERT INTO participants (roulette_id, user_id, username, full_name)
             VALUES ($1, $2, $3, $4)
@@ -829,6 +773,7 @@ async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             WHERE roulette_id = $1
         """, roulette_id)
         
+        # تحديث عدد المشاركين في نفس الرسالة
         try:
             original_text = query.message.text
             new_text = re.sub(
@@ -842,29 +787,23 @@ async def join_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=query.message.reply_markup,
                 parse_mode=ParseMode.HTML
             )
-            
-            await context.bot.send_message(
-                chat_id=roulette['creator_id'],
-                text=f"مشارك جديد في سحبك!\n\n👤 الاسم: {user.full_name}\n"
-                     f"📌 اليوزر: @{user.username if user.username else 'غير متاح'}\n"
-                     f"🆔 ID: {user.id}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                    "إزالة المشارك",
-                    callback_data=f'remove_{roulette_id}_{user.id}'
-                )]])
-            )
-            
-            await query.answer("تمت مشاركتك في السحب بنجاح! 🎉", show_alert=True)
-            
         except Exception as e:
             logger.error(f"Error updating roulette message: {e}")
-            await query.answer("تمت مشاركتك، لكن حدث خطأ في تحديث الرسالة", show_alert=True)
+        
+        # ❌ إلغاء إرسال أي رسالة للمنشئ أو القناة
+        # (تم حذف block إرسال رسالة للمنشئ بالكامل)
+
+        # تنبيه للمستخدم
+        await safe_answer_query(query, "تمت مشاركتك في السحب بنجاح! 🎉", show_alert=True)
+
+
 
 async def draw_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = query.from_user
     roulette_id = int(query.data.split('_')[1])
     pool = context.bot_data.get('pool')
+    
     
     async with pool.acquire() as conn:
         roulette = await conn.fetchrow("""
@@ -873,11 +812,11 @@ async def draw_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         """, roulette_id, user.id)
         
         if not roulette:
-            await query.answer("هذا السحب لم يعد متاحًا أو ليس لديك صلاحية!", show_alert=True)
+            await safe_answer_query(query, "هذا السحب لم يعد متاحًا أو ليس لديك صلاحية!", show_alert=True)
             return
         
         if roulette['is_active']:
-            await query.answer("يجب إيقاف المشاركة أولاً قبل السحب!", show_alert=True)
+            await safe_answer_query(query, "يجب إيقاف المشاركة أولاً قبل السحب!", show_alert=True)
             return
         
         participants = await conn.fetch("""
@@ -886,7 +825,7 @@ async def draw_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         """, roulette_id)
         
         if len(participants) < roulette['winner_count']:
-            await query.answer("عدد المشاركين أقل من عدد الفائزين المطلوب!", show_alert=True)
+            await safe_answer_query(query, "عدد المشاركين أقل من عدد الفائزين المطلوب!", show_alert=True)
             return
         
         winners = random.sample(participants, roulette['winner_count'])
@@ -905,7 +844,7 @@ async def draw_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             parse_mode=ParseMode.HTML
         )
         
-        await query.answer("تم سحب الفائزين بنجاح!")
+        await safe_answer_query(query, "تم سحب الفائزين بنجاح!", show_alert=True)
         
         for winner in winners:
             try:
@@ -928,20 +867,23 @@ async def stop_participation(update: Update, context: ContextTypes.DEFAULT_TYPE)
     roulette_id = int(query.data.split('_')[1])
     pool = context.bot_data.get('pool')
     
+    # حاول الرد أولاً، وإذا فشل، أرسل رسالة بديلة
+
+    
+    # باقي الكود...
+    
     async with pool.acquire() as conn:
-        # التحقق من حالة السحب الحالية
         roulette = await conn.fetchrow("""
             SELECT is_active, chat_id, message_id FROM roulettes 
             WHERE id = $1 AND creator_id = $2
         """, roulette_id, user.id)
         
         if not roulette:
-            await query.answer("ليس لديك صلاحية لإدارة هذا السحب!", show_alert=True)
+            await safe_answer_query(query, "ليس لديك صلاحية لإدارة هذا السحب!", show_alert=True)
             return
             
         new_status = not roulette['is_active']
         
-        # تحديث حالة السحب في قاعدة البيانات
         result = await conn.execute("""
             UPDATE roulettes 
             SET is_active = $1 
@@ -949,15 +891,14 @@ async def stop_participation(update: Update, context: ContextTypes.DEFAULT_TYPE)
         """, new_status, roulette_id, user.id)
         
         if result.split()[1] == '0':
-            await query.answer("ليس لديك صلاحية لإدارة هذا السحب!", show_alert=True)
+            await safe_answer_query(query, "ليس لديك صلاحية لإدارة هذا السحب!", show_alert=True)
             return
         
-        # إنشاء لوحة المفاتيح الجديدة
         keyboard = [
             [InlineKeyboardButton("المشاركة في السحب", callback_data=f'join_{roulette_id}')],
             [
                 InlineKeyboardButton("🎲 ابدأ السحب", callback_data=f'draw_{roulette_id}'),
-                InlineKeyboardButton("⏸ استئناف المشاركة" if new_status else "⏹ أوقف المشاركة", 
+                InlineKeyboardButton("⏸ إيقاف المشاركة" if new_status else "⏹ استأناف المشاركة", 
                                    callback_data=f'stop_{roulette_id}')
             ],
             [InlineKeyboardButton("🔔 ذكرني إذا فزت 💌", callback_data='remind_me')]
@@ -966,18 +907,15 @@ async def stop_participation(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         try:
-            # تحديث الرسالة الأصلية في القناة
             await context.bot.edit_message_reply_markup(
                 chat_id=roulette['chat_id'],
                 message_id=roulette['message_id'],
                 reply_markup=reply_markup
             )
             
-            # إرسال رسالة تأكيد للمنشئ
             status_text = "تم استئناف المشاركة" if new_status else "تم إيقاف المشاركة"
-            await query.answer(f"{status_text} بنجاح", show_alert=True)
+            await safe_answer_query(query, f"{status_text} بنجاح", show_alert=True)
             
-            # تحديث رسالة التحكم الخاصة بالمنشئ
             manage_keyboard = [
                 [InlineKeyboardButton("🎲 ابدأ السحب", callback_data=f'draw_{roulette_id}')],
                 [InlineKeyboardButton("⏸ استئناف المشاركة" if new_status else "⏹ أوقف المشاركة", 
@@ -993,13 +931,16 @@ async def stop_participation(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
         except Exception as e:
             logger.error(f"Error updating message buttons: {e}")
-            await query.answer("تم تغيير الحالة ولكن حدث خطأ في تحديث الرسالة", show_alert=True)
+            await safe_answer_query(query, "تم تغيير الحالة ولكن حدث خطأ في تحديث الرسالة", show_alert=True)
 
 async def view_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = query.from_user
     roulette_id = int(query.data.split('_')[2])
     pool = context.bot_data.get('pool')
+    
+    if not await safe_answer_query(query):
+        return
     
     async with pool.acquire() as conn:
         participants = await conn.fetch("""
@@ -1010,7 +951,7 @@ async def view_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         """, roulette_id)
         
         if not participants:
-            await query.answer("لا يوجد مشاركون بعد!", show_alert=True)
+            await safe_answer_query(query, "لا يوجد مشاركون بعد!", show_alert=True)
             return
         
         participants_text = "\n".join(
@@ -1018,7 +959,6 @@ async def view_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) 
              for i, p in enumerate(participants)]
         )
         
-        await query.answer()
         await context.bot.send_message(
             chat_id=user.id,
             text=f"قائمة المشاركين في السحب:\n\n{participants_text}",
@@ -1034,7 +974,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return MAIN_MENU
     except Exception as e:
         logger.error(f"Error in back_to_main: {e}")
-        await query.answer("حدث خطأ أثناء التحميل، يرجى المحاولة مرة أخرى", show_alert=True)
+        await safe_answer_query(query, "حدث خطأ أثناء التحميل، يرجى المحاولة مرة أخرى", show_alert=True)
     
     return MAIN_MENU
 
@@ -1048,7 +988,7 @@ async def show_donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     pool = context.bot_data.get('pool')
     
     if not pool:
-        await query.answer("حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
+        await safe_answer_query(query, "حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
         return
     
     user_status = await check_user_payment_status(user_id, pool)
@@ -1079,13 +1019,13 @@ async def handle_donate_selection(update: Update, context: ContextTypes.DEFAULT_
             title="التبرع للمطور",
             description=f"التبرع للمطور مقابل {amount} نجوم تليجرام",
             payload=f"donation_{query.from_user.id}_{amount}",
-            provider_token="",  # يترك فارغًا كما أوصى صديقك
+            provider_token="",
             currency=STARS_CURRENCY,
             prices=prices
         )
     except Exception as e:
         logger.error(f"Error sending invoice: {e}")
-        await query.answer("حدث خطأ أثناء إعداد عملية الدفع. يرجى المحاولة لاحقًا.", show_alert=True)
+        await safe_answer_query(query, "حدث خطأ أثناء إعداد عملية الدفع. يرجى المحاولة لاحقًا.", show_alert=True)
 
 async def handle_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.pre_checkout_query
@@ -1140,128 +1080,6 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         "سيتم استخدام هذه الأموال لتحسين البوت وتقديم المزيد من الميزات."
     )
 
-async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    user_id = query.from_user.id
-    payment_type = query.data
-    pool = context.bot_data.get('pool')
-    
-    if not pool:
-        await query.answer("حدث خطأ في النظام. يرجى المحاولة لاحقًا.", show_alert=True)
-        return MAIN_MENU
-
-    # تحويل أنواع الدفع إلى المفاتيح الموجودة في PRICES
-    payment_map = {
-        'upgrade_month': 'premium_month',
-        'upgrade_once': 'add_channel_once',
-        'upgrade_month_points': 'premium_month',
-        'upgrade_once_points': 'add_channel_once'
-    }
-
-    use_points = payment_type.endswith('_points')
-    payment_key = payment_map.get(payment_type)
-
-    if not payment_key:
-        await query.answer("نوع الدفع غير صحيح!", show_alert=True)
-        return PAYMENT
-
-    amount = PRICES.get(payment_key, 0)
-
-    if use_points:
-        # الدفع باستخدام النقاط
-        payment_success = await process_payment(user_id, payment_key, pool, use_points=True)
-        if payment_success:
-            await query.answer(f"تم الدفع بنجاح باستخدام {amount} نقطة!", show_alert=True)
-            await query.edit_message_text(
-                text="❗️الخطوة التالية: أرسل يوزر القناة (مثال: @ChannelName) أو حول رسالة من القناة\n\n"
-                     "⚠️ يجب أن يكون البوت أدمن في القناة",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data='back_to_main')]])
-            )
-            return WAITING_FOR_WINNERS
-        else:
-            await query.answer("رصيد النقاط غير كافي!", show_alert=True)
-            return PAYMENT
-    else:
-        # إرسال فاتورة الدفع باستخدام النجوم
-        description = "اشتراك شهري" if payment_key == 'premium_month' else "دفع لمرة واحدة"
-        prices = [LabeledPrice(label=description, amount=amount)]
-        
-        try:
-            await context.bot.send_invoice(
-                chat_id=query.message.chat_id,
-                title=description,
-                description=f"{description} مقابل {amount} نجوم تليجرام",
-                payload=f"{payment_key}_{user_id}_{amount}",
-                provider_token="",  # أدخل Provider Token هنا إن وجد
-                currency=STARS_CURRENCY,
-                prices=prices
-            )
-            return PAYMENT
-        except Exception as e:
-            logger.error(f"Error sending invoice: {e}")
-            await query.answer("حدث خطأ أثناء إعداد عملية الدفع. يرجى المحاولة لاحقًا.", show_alert=True)
-            return PAYMENT
-
-
-async def handle_link_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    current_state = context.user_data.get('link_channel_purpose')
-    
-    try:
-        if update.message.forward_from_chat:
-            chat = update.message.forward_from_chat
-        else:
-            text = update.message.text.strip()
-            text = text.replace('https://t.me/', '').replace('@', '')
-            chat = await context.bot.get_chat(f"@{text}" if not text.startswith('@') else text)
-        
-        admins = await chat.get_administrators()
-        bot_id = context.bot.id
-        if not any(admin.user.id == bot_id for admin in admins):
-            await update.message.reply_text("❌ البوت ليس مشرفًا! يرجى ترقيته أولاً.")
-            return LINK_CHANNEL if current_state == 'main_channel' else WAITING_FOR_WINNERS
-
-        if current_state == 'main_channel':
-            # ربط القناة الرئيسية فقط (مع رسالة تأكيد)
-            channel_info = f"{chat.id}|{chat.username}" if chat.username else str(chat.id)
-            
-            async with context.bot_data['pool'].acquire() as conn:
-                await conn.execute("UPDATE users SET linked_channel = $1 WHERE telegram_id = $2", channel_info, user_id)
-            
-            await update.message.reply_text(
-                f"✅ تم ربط القناة الرئيسية بنجاح!\n\n"
-                f"اسم القناة: {chat.title}\n"
-                f"{'@' + chat.username if chat.username else 'ID: ' + str(chat.id)}"
-            )
-            await show_main_menu(update, context)
-            return MAIN_MENU
-        else:
-            # قناة الشرط (بدون أي رسائل تأكيد)
-            context.user_data['required_channel'] = f"@{chat.username}" if chat.username else str(chat.id)
-            
-            # الانتقال المباشر لاختيار الفائزين
-            await update.message.reply_text(
-                "الآن اختر عدد الفائزين:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(str(i), callback_data=f'winners_{i}') for i in [1, 2, 3]],
-                    [InlineKeyboardButton(str(i), callback_data=f'winners_{i}') for i in [4, 5, 6]],
-                    [InlineKeyboardButton(str(i), callback_data=f'winners_{i}') for i in [7, 8, 9]],
-                    [InlineKeyboardButton("10", callback_data='winners_10')],
-                    [InlineKeyboardButton("رجوع", callback_data='back_to_main')]
-                ])
-            )
-            return WAITING_FOR_WINNERS
-        
-    except Exception as e:
-        logger.error(f"Error linking channel: {e}")
-        await update.message.reply_text("""
-❌ حدث خطأ! تأكد من:
-1. القناة عامة
-2. البوت مشرف
-3. اليوزر صحيح (مثل @ChannelName)
-""")
-        return LINK_CHANNEL if current_state == 'main_channel' else WAITING_FOR_WINNERS
-
 async def unlink_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -1270,7 +1088,7 @@ async def unlink_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with pool.acquire() as conn:
         user_status = await check_user_payment_status(user_id, pool)
         if not user_status['linked_channel']:
-            await query.answer("لا يوجد قناة مربوطة!", show_alert=True)
+            await safe_answer_query(query, "لا يوجد قناة مربوطة!", show_alert=True)
             return MAIN_MENU
         
         await conn.execute("""
@@ -1279,17 +1097,17 @@ async def unlink_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             WHERE telegram_id = $1
         """, user_id)
     
-    await query.answer("تم فصل القناة بنجاح", show_alert=True)
+    await safe_answer_query(query, "تم فصل القناة بنجاح", show_alert=True)
     await show_main_menu(update, context)
     return MAIN_MENU
 
 async def remind_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("سيتم إعلامك إذا فزت بأي سحب مستقبلي", show_alert=True)
+    await safe_answer_query(query, "سيتم إعلامك إذا فزت بأي سحب مستقبلي", show_alert=True)
 
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     
     keyboard = [[InlineKeyboardButton("تواصل مع الدعم", url=f"https://t.me/{SUPPORT_USERNAME[1:]}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1314,7 +1132,6 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(
         text=f"رصيدك الحالي:\n\n"
-            #  f"⭐ النجوم: {user_status['stars']}\n"
              f"📌 النقاط: {user_status['points']}\n\n"
              f"يمكنك شراء نقاط بخصم 30% (أرخص من النجوم)",
         reply_markup=reply_markup
@@ -1324,7 +1141,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(msg="حدث خطأ في البوت:", exc_info=context.error)
     
     if update.callback_query:
-        await update.callback_query.answer("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى!", show_alert=True)
+        try:
+            await update.callback_query.answer("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى!", show_alert=True)
+        except:
+            pass
     elif update.message:
         await update.message.reply_text("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى!")
 
