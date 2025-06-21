@@ -19,6 +19,7 @@ import re
 import asyncpg
 import asyncio
 import platform
+import httpx
 
 # تحميل متغيرات البيئة
 load_dotenv()
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # بيانات البوت من متغيرات البيئة
 TOKEN = os.getenv('BOT_TOKEN')
-CHANNEL = f"@{os.getenv('CHANNEL_USERNAME')}"
+CHANNEL = f"@{os.getenv('CHANNEL_USERNAME')}" if os.getenv('CHANNEL_USERNAME') else None
 ADMINS = [int(id) for id in os.getenv('ADMIN_IDS').split(',')] if os.getenv('ADMIN_IDS') else []
 DATABASE_URL = os.getenv('DATABASE_URL')
 SUPPORT_USERNAME = "@OMAR_M_SHEHATA"
@@ -49,6 +50,16 @@ PRICES = {
 }
 
 STARS_CURRENCY = "XTR"
+
+async def verify_token(token: str) -> bool:
+    """تحقق من صحة التوكن مع سيرفر تليجرام"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            return response.status_code == 200
+    except Exception as e:
+        logger.error(f"فشل التحقق من التوكن: {e}")
+        return False
 
 async def safe_answer_query(query, text=None, show_alert=False):
     """دالة مساعدة للرد الآمن على الاستعلامات مع معالجة الأخطاء"""
@@ -70,69 +81,78 @@ async def safe_answer_query(query, text=None, show_alert=False):
             return False
 
 async def init_db():
-    pool = await asyncpg.create_pool(DATABASE_URL)
-    async with pool.acquire() as conn:
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            telegram_id BIGINT PRIMARY KEY,
-            stars INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0,
-            is_premium BOOLEAN DEFAULT FALSE,
-            premium_expiry TIMESTAMP,
-            created_at TIMESTAMP DEFAULT now(),
-            updated_at TIMESTAMP DEFAULT now(),
-            linked_channel TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS roulettes (
-            id SERIAL PRIMARY KEY,
-            creator_id BIGINT,
-            message TEXT,
-            channel_id TEXT,
-            condition_channel_id TEXT,
-            winner_count INTEGER,
-            is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT now(),
-            message_id BIGINT,
-            chat_id BIGINT
-        );
-        
-        CREATE TABLE IF NOT EXISTS participants (
-            id SERIAL PRIMARY KEY,
-            roulette_id INTEGER REFERENCES roulettes(id) ON DELETE CASCADE,
-            user_id BIGINT,
-            username TEXT,
-            full_name TEXT,
-            joined_at TIMESTAMP DEFAULT now()
-        );
-        
-        CREATE TABLE IF NOT EXISTS payments (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            payment_type TEXT,
-            amount INTEGER,
-            is_completed BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT now(),
-            completed_at TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS donations (
-            id SERIAL PRIMARY KEY,
-            donor_id BIGINT,
-            amount INTEGER,
-            donation_date TIMESTAMP DEFAULT now()
-        );
-        
-        CREATE TABLE IF NOT EXISTS point_transactions (
-            id SERIAL PRIMARY KEY,
-            admin_id BIGINT,
-            user_id BIGINT,
-            points INTEGER,
-            transaction_date TIMESTAMP DEFAULT now(),
-            notes TEXT
-        );
-        """)
-    return pool
+    """تهيئة قاعدة البيانات"""
+    if not DATABASE_URL:
+        logger.error("لم يتم تعيين DATABASE_URL في متغيرات البيئة!")
+        return None
+    
+    try:
+        pool = await asyncpg.create_pool(DATABASE_URL)
+        async with pool.acquire() as conn:
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_id BIGINT PRIMARY KEY,
+                stars INTEGER DEFAULT 0,
+                points INTEGER DEFAULT 0,
+                is_premium BOOLEAN DEFAULT FALSE,
+                premium_expiry TIMESTAMP,
+                created_at TIMESTAMP DEFAULT now(),
+                updated_at TIMESTAMP DEFAULT now(),
+                linked_channel TEXT
+            );
+            
+            CREATE TABLE IF NOT EXISTS roulettes (
+                id SERIAL PRIMARY KEY,
+                creator_id BIGINT,
+                message TEXT,
+                channel_id TEXT,
+                condition_channel_id TEXT,
+                winner_count INTEGER,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT now(),
+                message_id BIGINT,
+                chat_id BIGINT
+            );
+            
+            CREATE TABLE IF NOT EXISTS participants (
+                id SERIAL PRIMARY KEY,
+                roulette_id INTEGER REFERENCES roulettes(id) ON DELETE CASCADE,
+                user_id BIGINT,
+                username TEXT,
+                full_name TEXT,
+                joined_at TIMESTAMP DEFAULT now()
+            );
+            
+            CREATE TABLE IF NOT EXISTS payments (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                payment_type TEXT,
+                amount INTEGER,
+                is_completed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT now(),
+                completed_at TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS donations (
+                id SERIAL PRIMARY KEY,
+                donor_id BIGINT,
+                amount INTEGER,
+                donation_date TIMESTAMP DEFAULT now()
+            );
+            
+            CREATE TABLE IF NOT EXISTS point_transactions (
+                id SERIAL PRIMARY KEY,
+                admin_id BIGINT,
+                user_id BIGINT,
+                points INTEGER,
+                transaction_date TIMESTAMP DEFAULT now(),
+                notes TEXT
+            );
+            """)
+        return pool
+    except Exception as e:
+        logger.error(f"فشل تهيئة قاعدة البيانات: {e}")
+        return None
 
 async def check_user_payment_status(user_id: int, pool) -> dict:
     async with pool.acquire() as conn:
@@ -223,6 +243,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await show_main_menu(update, context)
     return MAIN_MENU
 
+# ... (بقية الدوال تبقى كما هي بدون تغيير)
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("إضافة نقاط لمستخدم", callback_data='add_points')],
@@ -1149,88 +1170,106 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى!")
 
 async def main() -> None:
+    # التحقق من التوكن قبل البدء
+    if not TOKEN:
+        logger.error("لم يتم تعيين BOT_TOKEN في متغيرات البيئة!")
+        return
+    
+    if not await verify_token(TOKEN):
+        logger.error("توكن البوت غير صالح أو مرفوض من قبل سيرفر تليجرام!")
+        return
+
     if platform.system() == 'Windows':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
     pool = await init_db()
-    application = Application.builder().token(TOKEN).build()
-    application.bot_data['pool'] = pool
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            START: [
-                CallbackQueryHandler(subscribed, pattern='^subscribed$')
-            ],
-            MAIN_MENU: [
-                CallbackQueryHandler(create_roulette, pattern='^create_roulette$'),
-                CallbackQueryHandler(link_channel, pattern='^link_channel$'),
-                CallbackQueryHandler(unlink_channel, pattern='^unlink_channel$'),
-                CallbackQueryHandler(show_donate_menu, pattern='^donate_menu$'),
-                CallbackQueryHandler(remind_me, pattern='^remind_me$'),
-                CallbackQueryHandler(support, pattern='^support$'),
-                CallbackQueryHandler(balance, pattern='^balance$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
-            ],
-            ADMIN_MENU: [
-                CallbackQueryHandler(admin_add_points, pattern='^add_points$'),
-                CallbackQueryHandler(admin_menu, pattern='^admin_menu$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_handle_points)
-            ],
-            WAITING_FOR_TEXT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_roulette_text),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
-            ],
-            ADD_CHANNEL: [
-                CallbackQueryHandler(add_channel, pattern='^add_channel$'),
-                CallbackQueryHandler(skip_channel, pattern='^skip_channel$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
-            ],
-            PAYMENT: [
-                CallbackQueryHandler(handle_payment, pattern='^(upgrade_month|upgrade_once|upgrade_month_points|upgrade_once_points)$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
-                MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment)
-            ],
-            WAITING_FOR_WINNERS: [
-                CallbackQueryHandler(set_winners, pattern=r'^winners_\d+$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link_channel)
-            ],
-            LINK_CHANNEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link_channel),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
-            ]
-        },
-        fallbacks=[CommandHandler('start', start)],
-    )
-
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(join_roulette, pattern='^join_'))
-    application.add_handler(CallbackQueryHandler(draw_roulette, pattern='^draw_'))
-    application.add_handler(CallbackQueryHandler(stop_participation, pattern='^stop_'))
-    application.add_handler(CallbackQueryHandler(view_participants, pattern='^view_participants_'))
-    application.add_handler(CallbackQueryHandler(back_to_main, pattern='^back_to_main$'))
-    application.add_handler(CallbackQueryHandler(handle_donate_selection, pattern='^donate$'))
-    application.add_handler(CallbackQueryHandler(admin_menu, pattern='^admin_menu$'))
-    application.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
-    application.add_error_handler(error_handler)
-
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(drop_pending_updates=True)
+    if not pool:
+        logger.error("فشل تهيئة اتصال قاعدة البيانات!")
+        return
 
     try:
+        application = Application.builder().token(TOKEN).build()
+        application.bot_data['pool'] = pool
+
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('start', start)],
+            states={
+                START: [
+                    CallbackQueryHandler(subscribed, pattern='^subscribed$')
+                ],
+                MAIN_MENU: [
+                    CallbackQueryHandler(create_roulette, pattern='^create_roulette$'),
+                    CallbackQueryHandler(link_channel, pattern='^link_channel$'),
+                    CallbackQueryHandler(unlink_channel, pattern='^unlink_channel$'),
+                    CallbackQueryHandler(show_donate_menu, pattern='^donate_menu$'),
+                    CallbackQueryHandler(remind_me, pattern='^remind_me$'),
+                    CallbackQueryHandler(support, pattern='^support$'),
+                    CallbackQueryHandler(balance, pattern='^balance$'),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
+                ],
+                ADMIN_MENU: [
+                    CallbackQueryHandler(admin_add_points, pattern='^add_points$'),
+                    CallbackQueryHandler(admin_menu, pattern='^admin_menu$'),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, admin_handle_points)
+                ],
+                WAITING_FOR_TEXT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_roulette_text),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
+                ],
+                ADD_CHANNEL: [
+                    CallbackQueryHandler(add_channel, pattern='^add_channel$'),
+                    CallbackQueryHandler(skip_channel, pattern='^skip_channel$'),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
+                ],
+                PAYMENT: [
+                    CallbackQueryHandler(handle_payment, pattern='^(upgrade_month|upgrade_once|upgrade_month_points|upgrade_once_points)$'),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
+                    MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment)
+                ],
+                WAITING_FOR_WINNERS: [
+                    CallbackQueryHandler(set_winners, pattern=r'^winners_\d+$'),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link_channel)
+                ],
+                LINK_CHANNEL: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link_channel),
+                    CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
+                ]
+            },
+            fallbacks=[CommandHandler('start', start)],
+            per_message=False
+        )
+
+        application.add_handler(conv_handler)
+        application.add_handler(CallbackQueryHandler(join_roulette, pattern='^join_'))
+        application.add_handler(CallbackQueryHandler(draw_roulette, pattern='^draw_'))
+        application.add_handler(CallbackQueryHandler(stop_participation, pattern='^stop_'))
+        application.add_handler(CallbackQueryHandler(view_participants, pattern='^view_participants_'))
+        application.add_handler(CallbackQueryHandler(back_to_main, pattern='^back_to_main$'))
+        application.add_handler(CallbackQueryHandler(handle_donate_selection, pattern='^donate$'))
+        application.add_handler(CallbackQueryHandler(admin_menu, pattern='^admin_menu$'))
+        application.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
+        application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
+        application.add_error_handler(error_handler)
+
+        await application.initialize()
+        await application.start()
+        
+        bot = await application.bot.get_me()
+        logger.info(f"Bot @{bot.username} started successfully!")
+        
+        await application.updater.start_polling(drop_pending_updates=True)
+
+        # البقاء في حلقة التشغيل
         while True:
-            await asyncio.sleep(1)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logger.info("Stopping bot...")
+            await asyncio.sleep(3600)
+
+    except Exception as e:
+        logger.error(f"فشل تشغيل البوت: {e}")
     finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
-        await pool.close()
+        if pool:
+            await pool.close()
 
 if __name__ == '__main__':
     try:
