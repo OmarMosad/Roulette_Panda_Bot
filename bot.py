@@ -32,7 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # بيانات البوت من متغيرات البيئة
-TOKEN = os.getenv('BOT_TOKEN')
+
 CHANNEL = f"@{os.getenv('CHANNEL_USERNAME')}" if os.getenv('CHANNEL_USERNAME') else None
 ADMINS = [int(id) for id in os.getenv('ADMIN_IDS').split(',')] if os.getenv('ADMIN_IDS') else []
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -1170,6 +1170,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى!")
 
 async def main() -> None:
+    TOKEN = os.getenv('BOT_TOKEN')
+    
     # التحقق من التوكن قبل البدء
     if not TOKEN:
         logger.error("لم يتم تعيين BOT_TOKEN في متغيرات البيئة!")
@@ -1183,6 +1185,9 @@ async def main() -> None:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
     pool = await init_db()
+    
+    # التحقق من نجاح تهيئة الاتصال بقاعدة البيانات
+
     if not pool:
         logger.error("فشل تهيئة اتصال قاعدة البيانات!")
         return
